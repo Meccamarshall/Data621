@@ -13,12 +13,11 @@ library(knitr)
 library(kableExtra)
 library(DT)
 library(reshape2)
+library(car) 
 library(naniar) 
 library(corrplot) 
 library(e1071) 
-library(caret)
-library(jtools)
-library(performance)
+library(caret) 
 ```
 
 
@@ -33,60 +32,73 @@ provided). Below is a short description of the variables of interest in the data
 ```{r}
 train <- read_csv('https://raw.githubusercontent.com/Meccamarshall/Data621/main/Homework1/moneyball-training-data.csv', col_names = TRUE)[,-1] 
 eval <- read_csv('https://raw.githubusercontent.com/Meccamarshall/Data621/main/Homework1/moneyball-evaluation-data.csv',col_names=TRUE)[,-1] 
+```
 
-# Renaming the column names to make them less complicated
+Renaming the column names to make them less complicated
+```{r}
 colnames(train) <- gsub("TEAM_", "", colnames(train))
 colnames(eval) <- gsub("TEAM_", "", colnames(eval))
 ```
 
-### Data Exploration
+# Data Exploration
 ```{r}
 summary(train)
 summary(eval)
 ```
 
-### Glimpse at Data
+Viewing rows, columns, and variable types
+When we glimpse at the data we noticed that the variables are numeric. There are also alot of NA within the data set. 
 ```{r}
 glimpse(train)
 glimpse(eval)
 ```
 
-### Find the standard deviation for both datasets
+Viewing a sample of the data for both training and eval data sets
+```{r}
+head(train)
+head(eval)
+```
+
+Showing the entire training and evaluation data sets
+```{r}
+DT::datatable(train, options = list(pagelength=4))
+DT::datatable(eval, options = list(pagelength=4))
+```
+
+Find the standard deviation for both datasets
 ```{r}
 apply(train,2,sd, na.rm=TRUE)
 apply(eval,2,sd, na.rm=TRUE)
 ```
 
+## Visualizing data
+Box plots
 ```{r}
-# Creating boxplot
 ggplot(data = melt(train), aes(x=variable, y=value)) + geom_boxplot(aes(color=variable)) + coord_flip() + labs(title="BoxPlot for all variables")
 ```
 
+The box plots above indicate that a significant portion of the explanatory variables exhibit high variances. Additionally, there is notable misalignment between many of the medians and means, highlighting the influence of outliers.
+
+Density Curves to find skewness in data
 ```{r}
-# Variable distributions
 ggplot(melt(train), aes(x=value))+
 geom_density(fill = "#ffc8dd", color="#cdb4db") + 
   facet_wrap(~variable, scales ="free", ncol = 4) +
   labs(x = element_blank(), y = element_blank())
 ```
 
-### Data Preparation
-```{r}
-# Checking for any missing values
-sapply(train, function(x) sum(is.na(x)))
-```
-```{r}
-vis_miss(train)
-```
+In the density curves above, it's evident that the variables for batting, pitching home runs, and batting strikeouts exhibit a bimodal distribution. Conversely, TARGET_WINS and TEAM_BATTING_2B display mostly normal distributions. FIELDING_E, PITCHING_BB, PITCHING_H, and PITCHING_SO demonstrate the most skewed data distributions, with all skewed graphs being right-skewed except for BATTING_BB.
 
+## Finding Correlations in data
 ```{r}
-gg_miss_var(train)+ labs(title="Summary of Missing Data Visual")
+DT::datatable(cor(drop_na(train[,])), options = list(pagelength=4))
 ```
-
 ```{r}
-# Correlation Plot amongst the variables
 train %>% cor(., use="pairwise.complete.obs", method = "pearson") %>% corrplot(.,method = "color", type= "upper", tl.col="black", diag=TRUE , number.cex = 0.5, addCoef.col = 'black', tl.srt=50, col=colorRampPalette(c("#9c89b8","#f0a6ca","#b8bedd"))(200))
 ```
+
+The correlation for the above heatmap indicates strong positive associations primarily with BATTING_BB, BATTING_H, BATTING_2B, BATTING_HR, PITCHING_BB, PITCHING_HR, and PITCHING_H.
+
 ```{r}
 train %>%
   gather(variable, value, -TARGET_WINS) %>%
@@ -96,11 +108,38 @@ train %>%
   facet_wrap(~variable, scales ="free", ncol = 4) +
   labs(x = element_blank(), y = "Wins")+
   labs(title="Relationship Between Predictions and TARGET_WINS")
-```
+``` 
 
-Since more than 90% of the data for the TEAM_BATTING_HBP is missing, the variable has been removed from both train and eval data. 
+The above data illustrates the distribution compared to linear regression. It's evident that PITCHING_H and PITCHING_SO exhibit significant heteroscedasticity, while BATTING_HBP is comparatively more homoscedastic.
 
-# Model Building
+# Data Preparation
+
+## Missing Data
 ```{r}
-
+# Checking for any missing values
+sapply(train, function(x) sum(is.na(x)))
 ```
+
+```{r}
+vis_miss(train)
+```
+
+```{r}
+gg_miss_var(train)+ labs(title="Summary of Missing Data Visual")
+```
+
+## Removing/Fixing missing values
+```{r}
+train %>% 
+  gather(variable, value) %>%
+  filter(is.na(value)) %>%
+  group_by(variable) %>%
+  tally() %>%
+  mutate(percent = n / nrow(train) * 100) %>%
+  mutate(percent = paste0(round(percent, ifelse(percent < 10, 1, 0)), "%")) %>%
+  arrange(desc(n)) %>%
+  kable() %>%
+  kable_styling()
+```
+
+Since more than 90% of the data for the BATTING_HBP is missing, the variable has been removed from both train and eval data. 
