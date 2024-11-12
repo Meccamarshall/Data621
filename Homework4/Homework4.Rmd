@@ -1,0 +1,412 @@
+---
+title: "Data 621 - Homework 4"
+author: "Shamecca Marshall, Angel Gallardo"
+date: "11/10/2024"
+output: 
+  html_document:
+    code_folding: hide
+    theme: cosmo
+    highlight: tango
+    toc: true
+    number_section: false
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    df_print: paged
+---
+# Data 621 Homework 4
+
+## Introduction 
+
+In this homework assignment, we will explore, analyze and model a data set containing approximately 8000 records representing a customer at an auto insurance company. Each record has two response variables. The first response variable, `TARGET_FLAG`, is a 1 or a 0. A “1” means that the person was in a car crash. A zero means that the person was not in a car crash. The second response variable is `TARGET_AMT`. This value is zero
+if the person did not crash their car. But if they did crash their car, this number will be a value greater than zero.
+
+The objective is to build multiple linear regression and binary logistic regression models on the training data to predict the probability that a person will crash their car and also the amount of money it will cost if the person
+does crash their car. We can only use the variables given to us (or variables that we derive from the variables provided). 
+
+Below is a short description of the variables of interest in the data set:
+```{r message=FALSE, warning=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA, message=FALSE, warning=FALSE)
+library(skimr)
+library(ggcorrplot)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(DMwR2)
+library(caret)
+library(kableExtra)
+library(summarytools)
+library(skimr)
+library(cowplot)
+library(pROC)
+library(broom)
+library(car)
+library(jtools)
+library(MASS)
+```
+
+```{r message=FALSE, warning=FALSE}
+data_train <- read.csv("https://raw.githubusercontent.com/Meccamarshall/Data621/refs/heads/main/Homework4/insurance_training_data.csv", header = TRUE)
+data_test <- read.csv("https://raw.githubusercontent.com/Meccamarshall/Data621/refs/heads/main/Homework4/insurance-evaluation-data.csv", header = TRUE)
+```
+
+```{r}
+data_train
+```
+
+## Data Exploration {.tabset .tabset-fade .tabset-pills}
+
+### Data Exploration
+
+The dataset consists of **26** variables and **8161** observations with `AGE`, `YOJ`, and `CAR_AGE` variables containing some missing values. As stated previously, `TARGET_FLAG` and `TARGET_AMT` are our response variables. Also, `13` of the variables have discrete values and the rest of the variables are continuous. 
+
+```{r data_summary_train, message=FALSE, warning=FALSE}
+skim(data_train)
+```
+
+```{r}
+data_train %>% summarize_all(funs(sum(is.na(.)) / length(.)))
+```
+
+## Data Processing {.tabset .tabset-fade .tabset-pills}
+
+---
+
+### Fix formatting
+
+The currency symbols present in some values may disrupt our analysis, so we need to reformat these values accordingly.
+
+```{r}
+strip_dollars <- function(x){
+  x <- as.character(x)
+  x <- gsub(",", "", x)
+  x <- gsub("\\$", "", x)
+  as.numeric(x)
+}
+
+fix_formatting <- function(messy_df){
+  messy_df %>%
+    rowwise() %>%
+    mutate(INCOME = strip_dollars(INCOME),
+           HOME_VAL = strip_dollars(HOME_VAL),
+           BLUEBOOK = strip_dollars(BLUEBOOK),
+           OLDCLAIM = strip_dollars(OLDCLAIM)) %>%
+    ungroup()
+}
+```
+
+### Fix data types
+
+We observed that some variables categorized as discrete actually have a high number of unique values. Upon closer inspection of the variable descriptions, we found that although these variables are encoded as factors, they are indeed continuous. Additionally, the `TARGET_FLAG` variable is listed as numeric in the summary but should be a binary factor. We'll now correct these data types accordingly.
+
+```{r}
+fix_data_types <- function(messy_df){
+  messy_df %>%
+    rowwise() %>%
+    mutate(INCOME = as.numeric(INCOME),
+           HOME_VAL = as.numeric(HOME_VAL),
+           BLUEBOOK = as.numeric(BLUEBOOK),
+           OLDCLAIM = as.numeric(OLDCLAIM)) %>%
+    ungroup()
+}
+
+data_train$TARGET_FLAG <- factor(data_train$TARGET_FLAG)
+```
+
+### Fix bad and missing values
+
+Additionally, some values appear to be invalid (e.g., -3 in `CAR_AGE`). Since missing values in both variables are under 5%, we can replace these with the median. We'll calculate the median using the training set only and then apply it to both the training and testing sets to prevent overfitting.
+
+```{r}
+na_bad_values <- function(messy_df){
+  messy_df %>%
+    rowwise() %>%
+    mutate(CAR_AGE = ifelse(CAR_AGE < 0, NA, CAR_AGE))%>%
+    ungroup()
+}
+
+fix_missing <- function(df) {
+  df %>% 
+    mutate_at(vars(c("CAR_AGE", "YOJ", "AGE", "INCOME", "HOME_VAL")), ~ifelse(is.na(.), median(., na.rm = TRUE), .))
+}
+```
+
+### Process data
+
+We apply the processing steps above to both the training and testing datasets. 
+
+```{r}
+data_train <- data_train %>%
+  fix_formatting() %>%
+  fix_data_types() %>%
+  na_bad_values() %>%
+  fix_missing()
+```
+
+
+```{r}
+data_test <- data_test %>%
+  fix_formatting() %>%
+  fix_data_types() %>%
+  na_bad_values() %>%
+  fix_missing()
+```
+
+### Univariate charts
+
+We proceed to examine the distribution of `TARGET_FLAG` across the numeric variables. Notably, `BLUEBOOK`, `INCOME`, and `OLDCLAIM` contain a higher number of outliers relative to other variables. We also observe that older customers, those with older vehicles, higher home values, or higher incomes are generally involved in fewer car accidents. Conversely, individuals with motor vehicle record points or a high number of prior claims tend to have more accidents.
+
+```{r fig.height=10, fig.width=10}
+plot_vars <- c("TARGET_FLAG", names(keep(data_train, is.numeric)))
+
+data_train[plot_vars] %>%
+  dplyr::select(-INDEX, -TARGET_AMT) %>%
+  gather(variable, value, -TARGET_FLAG) %>%
+  ggplot(., aes(TARGET_FLAG, value, color=TARGET_FLAG)) + 
+  geom_boxplot() +
+  scale_color_brewer(palette="Set1") +
+  theme_light() +
+  theme(legend.position = "none") +
+  facet_wrap(~variable, scales ="free", ncol = 4) +
+  labs(x = element_blank(), y = element_blank())
+```
+
+
+```{r variables_distribution, fig.height=8, fig.width=10, message=FALSE, warning=FALSE}
+data_train %>% 
+  dplyr::select(-TARGET_FLAG, -TARGET_AMT, -INDEX) %>%
+  keep(is.numeric) %>%
+  gather() %>% 
+  ggplot(aes(x= value)) + 
+  geom_histogram(fill='pink') + 
+  facet_wrap(~key, scales = 'free')
+```
+
+The variables dislayed below need scale transformations like `OLDCLAIM`, `INCOME`, ` BLUEBOOK`, `HOME_VAL`.
+`AGE`has a guassian distribution. We see several variables have high number of zeros. `AGE` is the only variable that is normally distributed. Rest of the variables show some skewness. We will perform Box-Cox transformation on these variables.
+
+```{r variables_distribution2, fig.height=8, fig.width=10, message=FALSE, warning=FALSE}
+data_train %>% 
+  dplyr::select(OLDCLAIM, INCOME, BLUEBOOK, HOME_VAL) %>%
+  gather() %>% 
+  ggplot(aes(x= value)) + 
+  geom_histogram(fill='pink') + 
+  facet_wrap(~key, scales = 'free')
+```
+
+```{r fig.height=10, fig.width=10}
+data_train %>%
+  keep(is.numeric) %>%
+  gather(variable, value, -TARGET_AMT, -INDEX, -CLM_FREQ, -MVR_PTS) %>%
+  ggplot(., aes(value, TARGET_AMT)) + 
+  geom_point() +
+  scale_color_brewer(palette="Set1") +
+  theme_light() +
+  theme(legend.position = "none") +
+  facet_wrap(~variable, scales ="free", ncol = 3) +
+  labs(x = element_blank(), y = element_blank())
+```
+
+### Correlation
+
+We observe that `CLM_FREQ`, `MVR_PTS`, and `HOME_VAL` are the most positively correlated variables with our response variable, `TARGET_AMT`, indicating that higher claim frequency, motor vehicle record points, and home values are associated with higher target amounts. The remaining variables have relatively weak correlations with the response. Additionally, we notice a moderate negative correlation between `HOMEKIDS` and `INCOME`, suggesting that higher-income households tend to have fewer children at home.
+
+```{r correlations_plot, fig.height=8, fig.width=10, message=FALSE, warning=FALSE}
+corr_dataframe <- data_train %>%
+    mutate_if(is.factor, as.numeric) %>%
+    mutate_if(is.character, as.numeric) %>% 
+    select_if(is.numeric)                   
+
+q <- cor(corr_dataframe, use = "pairwise.complete.obs")
+ggcorrplot(q, type = "upper", outline.color = "white",
+           ggtheme = theme_classic(),
+           colors = c("#6D9EC1", "white", "#E46726"),
+           lab = TRUE, show.legend = FALSE, tl.cex = 8, lab_size = 3)
+```
+
+### Centrality Measures and Outliers
+
+```{r fig.height=5, fig.width=10}
+set.seed(42)
+accidents <- data_train %>%
+  filter(TARGET_FLAG == 1)
+
+ggplot(accidents, aes(x=TARGET_AMT)) + 
+  geom_density(fill='pink') +
+  theme_light() +
+  geom_vline(aes(xintercept = mean(TARGET_AMT)), lty=2, col="red") +
+  geom_label(aes(x=25000, y=0.00015, label=paste("mean =", round(mean(TARGET_AMT),0)))) +
+  geom_vline(aes(xintercept = median(TARGET_AMT)), lty=2, col="darkgreen") +
+  geom_label(aes(x=25000, y=0.00010, label=paste("median = ", round(median(TARGET_AMT), 0)))) +
+  labs(title="TARGET_AMT Density Plot", y="Density", x="TARGET_AMT")
+```
+
+The distribution of `TARGET_AMT` shows a long right tail. The mean payout is $5,702, while the median payout is $4,104, indicating that the distribution is skewed to the right. As expected, both the mean and median are higher for observations classified as outliers. Here, we consider values above $10,594 as outliers, based on our established cutoff point.
+
+```{r}
+outlier <- min(boxplot(data_train[data_train$TARGET_FLAG==1,]$TARGET_AMT, plot=FALSE)$out)
+data_train %>%
+  mutate(TARGET_AMT_OUTLIER = ifelse(TARGET_AMT < outlier, "Yes", "No")) %>%
+  group_by(TARGET_AMT_OUTLIER) %>%
+  summarise(Mean = mean(TARGET_AMT),
+            Median = median(TARGET_AMT)) 
+```
+
+
+
+---
+
+## Data Preparation {.tabset .tabset-fade .tabset-pills}
+
+### Sampling
+
+```{r}
+table(data_train$TARGET_FLAG)
+```
+
+There is an imbalance in the `TARGET_FLAG` variable
+
+Let's check the class distribution 
+
+```{r}
+prop.table(table(data_train$TARGET_FLAG))
+```
+
+The data contains only 26% that has already did an accident and 74% of negative flag. This is severly imbalanced data set. This would affect the accuracy score in the model building step if untreated. 
+
+To treat this unbalance, we would use the `over sampling` 
+
+```{r}
+set.seed(42)
+minority <- nrow(data_train[data_train$TARGET_FLAG == 1,])
+majority <- nrow(data_train[data_train$TARGET_FLAG == 0,])
+diff <- majority - minority
+minority_index <- data_train[data_train$TARGET_FLAG == 1,]$INDEX
+over_sample_train <- data.frame(INDEX = sample(minority_index, diff, TRUE)) %>%
+  merge(data_train, .) %>%
+  bind_rows(data_train)
+
+data_train_balanced <- over_sample_train
+```
+
+check the balance again
+
+```{r}
+table(over_sample_train$TARGET_FLAG)
+```
+
+
+---
+
+
+## Model Building - Logit Models {.tabset .tabset-fade .tabset-pills}
+
+Our goal is to predict both `TARGET_FLAG` and `TARGET_AMT`. Given that `TARGET_FLAG` is a discrete response variable, it should be modeled using logistic regression to estimate the probability of an individual being involved in an accident.
+
+```{r}
+# Initialize a df that will store the metrics of models
+models.df <- tibble(id=character(), formula=character(), res.deviance=numeric(), null.deviance=numeric(),
+                 aic=numeric(), accuracy=numeric(), sensitivity=numeric(), specificity=numeric(),
+                precision.deviance=numeric(), stringsAsFactors=FALSE) 
+```
+
+
+```{r}
+# A function to extract the relevant metrics from the summary and confusion matrix
+score_model <- function(id, model, data, output=FALSE) {
+  if (output) print(summary(model))
+  glm.probs <- predict(model, type="response")
+  # Confirm the 0.5 threshold
+  glm.pred <- ifelse(glm.probs > 0.5, 1, 0)
+  results <- tibble(target=data$TARGET_FLAG, pred=glm.pred)
+  results <- results %>%
+    mutate(pred.class = as.factor(pred), target.class = as.factor(target))
+  
+  if (output) print(confusionMatrix(results$pred.class,results$target.class, positive = "1"))
+  
+  acc <- confusionMatrix(results$pred.class,results$target.class, positive = "1")$overall['Accuracy']
+  sens <- confusionMatrix(results$pred.class,results$target.class, positive = "1")$byClass['Sensitivity']
+  spec <- confusionMatrix(results$pred.class,results$target.class, positive = "1")$byClass['Specificity']
+  #prec <- confusionMatrix(results$pred.class,results$target.class, positive = "1")$byClass['Precision']
+  res.deviance <- model$deviance
+  null.deviance <- model$null.deviance  
+  aic <- model$aic
+  metrics <- list(res.deviance=res.deviance, null.deviance=null.deviance,aic=aic, accuracy=acc, sensitivity=sens, specificity=spec)
+  metrics <- lapply(metrics, round, 3)
+  
+  if (output) plot(roc(results$target.class,glm.probs), print.auc = TRUE)
+  model.df <- tibble(id=id, res.deviance=metrics$res.deviance, null.deviance=metrics$null.deviance, 
+                         aic=metrics$aic, accuracy=metrics$accuracy, sensitivity=metrics$sensitivity, specificity=metrics$specificity)
+  model.list <- list(model=glm.fit, df_info=model.df)
+  return(model.list)
+}
+```
+
+### Model 1 A&B: Logit Models
+
+We create three types of models: null, full, and reduced. The null model includes only the intercept, representing the simplest form. The full model includes all predictors, serving as the most complex model. The reduced model is developed by systematically stepping through predictors between these two bounds, retaining only those that are statistically significant.
+
+```{r}
+mod1data <- data_train %>% dplyr::select(-c('TARGET_AMT','INDEX'))
+#mod1data <- data_train_balanced %>% select(-c('TARGET_AMT','INDEX'))
+
+model.null <- glm(TARGET_FLAG ~ 1,
+                 data=mod1data,
+                 family = binomial(link="logit")
+                 )
+
+model.full <- glm(TARGET_FLAG ~ .,
+                 data=mod1data,
+                 family = binomial(link="logit")
+                 )
+    
+model.reduced <- step(model.null,
+              scope = list(upper=model.full),
+             direction="both",
+             test="Chisq",
+             trace=0,
+             data=mod1data)
+
+m1a <- score_model('model.full', model.full, mod1data, output = TRUE)
+m1a$df_info
+models.df <- rbind(models.df,m1a$df_info)
+```
+
+```{r}
+m1b <- score_model('model.reduced', model.reduced, mod1data, output = TRUE)
+m1b$df_info
+models.df <- rbind(models.df,m1b$df_info)
+```
+
+
+We calculate McFadden's pseudo R-squared for the logistic regression models and observe that the difference between the full model and the reduced model is minimal.. 
+
+```{r}
+full_model_r2 <- round(1 - logLik(model.full) / logLik(model.null), 4)
+reduced_model_r2 <- round(1 - logLik(model.reduced) / logLik(model.null), 4)
+paste0('Full model = ',round(1-logLik(model.full)/logLik(model.null),4))
+paste0('Reduced model = ',round(1-logLik(model.reduced)/logLik(model.null),4))
+```
+
+#### Diagnotics
+
+We examine the reduced model for any irregularities and potential violations of assumptions. The logit values for the continuous predictors appear to be mostly linear.
+
+```{r}
+library(broom)
+# Select only numeric predictors and predict
+numdata <- mod1data %>%
+  dplyr::select_if(is.numeric)
+predictors <- colnames(numdata)
+probabilities <- predict(model.reduced, type = "response")
+# Bind the logit and tidying the data for plot
+numdata <- numdata %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+
+ggplot(numdata, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+```
+
