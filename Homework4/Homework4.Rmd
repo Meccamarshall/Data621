@@ -387,6 +387,101 @@ paste0('Full model = ',round(1-logLik(model.full)/logLik(model.null),4))
 paste0('Reduced model = ',round(1-logLik(model.reduced)/logLik(model.null),4))
 ```
 
+
+
+
+#####Multiple linear regression model
+
+
+```{r}
+
+mod2data <- data_train %>% dplyr::select(-c('TARGET_FLAG','INDEX'))
+mod2data <- na.omit(mod2data)
+```
+
+
+Model stepwise
+```{r}
+model.null <- lm(TARGET_AMT ~ 1, data = mod2data)
+model.full <- lm(TARGET_AMT ~ ., data = mod2data)
+
+set.seed(100)
+model.stepwise <- step(model.null, 
+                       scope = list(lower = model.null, upper = model.full), 
+                       direction = "both", 
+                       trace = FALSE)
+summary(model.stepwise)
+```
+
+
+
+
+
+The variables CLM_FREQ, MVR_PTS, HOME_VAL, and INCOME were chosen for the regression model because they show moderate to strong correlations with TARGET_AMT in the correlation heatmap, suggesting they may be influential predictors of claim amount. CLM_FREQ and MVR_PTS are positively correlated with TARGET_AMT, indicating a higher claim frequency and driving points may relate to higher claims. HOME_VAL and INCOME also exhibit a positive relationship with TARGET_AMT, implying that higher home values and incomes could correspond to increased claim amounts. Additionally, the scatter plots and histograms for these variables highlight some variability and range, which may contribute to predicting TARGET_AMT effectively in a linear regression mo
+```{r}
+# Create a model with manually selected predictors
+model.manual <- lm(TARGET_AMT ~ CLM_FREQ + MVR_PTS + HOME_VAL + INCOME  , data = mod2data)
+summary(model.manual)
+```
+
+#model with variable transformation
+The variable transformations of AGE_INCOME was chosen to better capture the relationships observed in the graphs. The histogram for INCOME^2 is right-skewed, with a concentration of lower values and a long tail, suggesting that a simple linear effect may not fully capture its influence on TARGET_AMT. By adding INCOME_SQ, we allow the model to account for potential nonlinear effects, where higher income levels might impact claim amounts differently. Additionally, the interaction term AGE_INCOME was included to explore the combined effect of age and income on claim amounts, as age may modify the influence of income, which could help capture more complex patterns seen in the data.
+```{r}
+mod2data <- mod2data %>%
+  mutate(INCOME_SQ = INCOME^2, AGE_INCOME = AGE * INCOME)
+
+model.interaction <- lm(TARGET_AMT ~ CLM_FREQ + MVR_PTS + HOME_VAL + INCOME + INCOME_SQ + AGE_INCOME , data = mod2data)
+summary(model.interaction)
+```
+
+
+
+
+
+The models have significant differences in performance metrics, with the stepwise model showing the lowest MSE (20,574,015) and RMSE (4,535.86). Both the manual and interaction models have similar MSE and RMSE values (around 21,498,780 and 4,636.68), indicating similar predictive power. The R-squared values are quite low across all models, ranging from 0.028 to 0.070, suggesting that the models explain very little of the variance in the target variable.
+```{r}
+
+evaluate_model <- function(model, data) {
+  # Predictions
+  predictions <- predict(model, newdata = data)
+  
+  # Metrics
+  actual <- data$TARGET_AMT
+  mse <- mean((predictions - actual)^2)
+  rmse <- sqrt(mse)
+  r_squared <- summary(model)$r.squared
+  adj_r_squared <- summary(model)$adj.r.squared
+  
+  # Return metrics
+  tibble(
+    Model = deparse(substitute(model)),
+    MSE = round(mse, 2),
+    RMSE = round(rmse, 2),
+    R_Squared = round(r_squared, 3),
+    Adj_R_Squared = round(adj_r_squared, 3)
+  )
+}
+
+# Evaluate all models
+results <- bind_rows(
+  evaluate_model(model.stepwise, mod2data),
+  evaluate_model(model.manual, mod2data),
+  evaluate_model(model.interaction, mod2data)
+)
+
+print(results)
+
+```
+
+
+
+
+
+
+
+
+
+
 #### Diagnotics
 
 We examine the reduced model for any irregularities and potential violations of assumptions. The logit values for the continuous predictors appear to be mostly linear.
@@ -410,3 +505,130 @@ ggplot(numdata, aes(logit, predictor.value))+
   facet_wrap(~predictors, scales = "free_y")
 ```
 
+#multiple linear regression model diagnostics
+All three sets of plots include the following diagnostics: residuals versus fitted values, histograms of residuals, Q-Q plots, and residuals versus leverage. For all the models, the actual versus predicted plots show a high concentration of points near zero, suggesting possible issues with model fit, particularly at larger values. The residuals versus fitted plots and histograms indicate skewness, as most residuals are concentrated near zero with some outliers. The Q-Q plots reveal heavy tails in the residual distribution, indicating deviations from normality. Additionally, in the three residuals versus leverage plots, a few influential points appear. Overall, both models seem to struggle with fitting certain aspects of the data, with potential issues in normality and residual spread.
+```{r}
+
+visualize_models <- function(models, data, target_col) {
+  par(mfrow = c(2, 2)) 
+  
+  for (i in seq_along(models)) {
+    model <- models[[i]]
+    model_name <- names(models)[i]
+    
+  
+    actual <- data[[target_col]]
+    predicted <- predict(model, newdata = data)
+    plot(actual, predicted,
+         xlab = "Actual Values", 
+         ylab = "Predicted Values",
+         main = paste("Actual vs Predicted:", model_name),
+         col = "blue", pch = 16)
+    abline(0, 1, col = "red", lwd = 2)
+    
+   
+    residuals <- residuals(model)
+    plot(predicted, residuals,
+         xlab = "Fitted Values", 
+         ylab = "Residuals",
+         main = paste("Residuals vs Fitted:", model_name),
+         col = "purple", pch = 16)
+    abline(h = 0, col = "red", lwd = 2)
+    
+    
+    hist(residuals,
+         breaks = 20,
+         main = paste("Histogram of Residuals:", model_name),
+         xlab = "Residuals",
+         col = "lightblue")
+    
+    
+    plot(model, main = paste("Diagnostics:", model_name))
+  }
+  
+  par(mfrow = c(1, 1)) 
+}
+
+
+models <- list(
+  Manual = model.manual,
+  Stepwise = model.stepwise,
+  Interaction = model.interaction
+)
+
+visualize_models(models, data = mod2data, target_col = "TARGET_AMT")
+
+```
+
+
+
+
+
+######4 Model selection
+
+#binary logistic model
+The reduced model is the better choice as it explains more variance (R² = 0.9547 vs. 0.0037 for the full model), has a slightly lower AIC, and offers comparable accuracy. Although the full model has a marginally higher sensitivity, the reduced model performs equally well or better in terms of specificity, making it a more efficient and effective model overall.
+
+
+#multiple linear regression
+Based on the evaluation metrics, the stepwise model appears to perform slightly better than the manual and interaction models, with the lowest MSE and RMSE values. However, all models have relatively low R-squared values, indicating that they do not explain much of the variance in the target variable, which suggests the presence of unmodeled factors or insufficient predictors. Given these results, the stepwise model may be the most reliable choice due to its better fit.
+
+
+
+
+
+####Predictions
+
+
+#clean data_test data
+
+
+
+
+
+
+#data_test Car crash predictions
+```{r}
+TargetFlag_pred <- data_test %>% dplyr::select(-c('TARGET_AMT', 'INDEX'))
+```
+
+
+```{r}
+
+
+
+
+predictions_prob <- predict(model.reduced, newdata = TargetFlag_pred, type = "response")
+
+
+predictions_class <- ifelse(predictions_prob > 0.5, 1, 0)
+
+
+TargetFlag_pred$predictions <- predictions_class
+
+
+print( TargetFlag_pred[, c('TARGET_FLAG','predictions')])
+
+
+```
+
+
+
+
+#data_test Target_AMT predictions
+
+```{r}
+TargetAmt_pred <- data_test %>% dplyr::select(-c('TARGET_FLAG','INDEX'))
+```
+
+
+```{r}
+
+predictions <- predict(model.stepwise, newdata = TargetAmt_pred )
+
+
+TargetAmt_pred$predictions <- predictions
+
+
+head(TargetAmt_pred[, c('TARGET_AMT','predictions')])
+```
